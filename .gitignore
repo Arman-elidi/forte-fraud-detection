@@ -4,6 +4,9 @@ __pycache__/
 *$py.class
 *.so
 .Python
+env/
+venv/
+ENV/
 build/
 develop-eggs/
 dist/
@@ -19,36 +22,40 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-MANIFEST
-
-# Virtual Environment
-venv/
-env/
-ENV/
-.venv
 
 # Jupyter Notebook
 .ipynb_checkpoints
-*.ipynb
 
-# IDE
-.vscode/
+# PyCharm
 .idea/
-*.swp
-*.swo
-*~
+
+# VS Code
+.vscode/
+
+# Data files (large datasets)
+data/*.csv
+!data/demo*.csv
+*.pkl
+*.joblib
+
+# Models (can be large)
+models/*.pkl
+!models/.gitkeep
+
+# Logs
+*.log
+logs/
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Project specific
-models/*.pkl
-data/*.csv
-reports/*.png
-reports/*.csv
-*.log
-catboost_info/
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
 
-# Keep directory structure
-!.gitkeep
+# Environment variables
+.env
+.env.local

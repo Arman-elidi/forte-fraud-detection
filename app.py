@@ -11,14 +11,18 @@ import numpy as np
 from pathlib import Path
 import plotly.graph_objects as go
 import plotly.express as px
+import importlib
 
+# Force reload inference module to get latest code
+import inference
+importlib.reload(inference)
 from inference import FraudPredictor
 
 
 # Конфигурация страницы
 st.set_page_config(
     page_title="Fraud Detection System",
-    page_icon="🛡️",
+    page_icon="🔒",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -26,38 +30,57 @@ st.set_page_config(
 # CSS стили
 st.markdown("""
 <style>
+    :root {
+        --forte-magenta: #E6007E;      /* Forte */
+        --forte-deep-purple: #5A2A83;  /* Forte Solo */
+        --forte-noble-green: #2E7D32;  /* Forte Premier */
+        --forte-dark-blue: #003366;   /* Forte Business */
+        --forte-blue: #0066CC;        /* Forte Corporate */
+    }
     .main-header {
         font-size: 2.5rem;
         font-weight: bold;
-        color: #1f77b4;
+        color: var(--forte-magenta);
         text-align: center;
         margin-bottom: 2rem;
     }
     .fraud-alert {
-        background-color: #ffcccc;
+        background-color: var(--forte-dark-blue);
+        color: white;
         padding: 1rem;
         border-radius: 0.5rem;
         border-left: 5px solid #ff0000;
     }
     .clean-alert {
-        background-color: #ccffcc;
+        background-color: var(--forte-noble-green);
+        color: white;
         padding: 1rem;
         border-radius: 0.5rem;
         border-left: 5px solid #00cc00;
     }
     .warning-alert {
-        background-color: #ffffcc;
+        background-color: var(--forte-deep-purple);
+        color: white;
         padding: 1rem;
         border-radius: 0.5rem;
         border-left: 5px solid #ffcc00;
+    }
+    /* Streamlit button styling */
+    .stButton > button {
+        background-color: var(--forte-magenta) !important;
+        color: white !important;
+        border: none;
+        border-radius: 0.25rem;
+    }
+    .stButton > button:hover {
+        background-color: #c5006a !important;
     }
 </style>
 """, unsafe_allow_html=True)
 
 
-@st.cache_resource
 def load_predictor():
-    """Загрузка модели (кэшируется)"""
+    """Загрузка модели"""
     model_path = '/usr/src/forte/models/fraud_detection_model.pkl'
     
     if not Path(model_path).exists():
@@ -74,20 +97,21 @@ def main():
     """Основная функция приложения"""
     
     # Заголовок
-    st.markdown('<div class="main-header">🛡️ Fraud Detection System</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-header">Fraud Detection System</div>', unsafe_allow_html=True)
     st.markdown("---")
     
     # Загрузка модели
     predictor = load_predictor()
     
     if predictor is None:
-        st.error("⚠️ Модель не загружена. Пожалуйста, запустите train.py для обучения модели.")
+        st.error("Модель не загружена. Пожалуйста, запустите train.py для обучения модели.")
         st.info("Запустите в терминале: `python train.py`")
         return
     
+
     # Боковая панель с настройками
     with st.sidebar:
-        st.header("⚙️ Настройки")
+        st.header("Настройки")
         
         # Порог классификации
         threshold = st.slider(
@@ -103,31 +127,156 @@ def main():
         st.markdown("---")
         
         # Информация о модели
-        st.subheader("📊 Информация о модели")
+        st.subheader("Информация о модели")
         st.write(f"**Тип модели:** CatBoost")
         st.write(f"**Признаков:** {len(predictor.model.feature_cols)}")
         st.write(f"**Порог:** {threshold:.3f}")
         
         st.markdown("---")
         
-        # Режим работы
+        # Управление моделью
+        st.subheader("Управление")
+        if st.button("Переобучить модель", help="Запустить процесс дообучения на новых данных"):
+            with st.spinner("Обучение модели... Это может занять несколько минут."):
+                import subprocess
+                try:
+                    # Run train.py in a subprocess
+                    result = subprocess.run(
+                        [sys.executable, "train.py"],
+                        capture_output=True,
+                        text=True,
+                        cwd="/usr/src/forte"
+                    )
+                    if result.returncode == 0:
+                        st.success("Модель успешно переобучена!")
+                        st.cache_resource.clear() # Clear cache to reload model
+                        # Reload predictor
+                        predictor = load_predictor()
+                    else:
+                        st.error("Ошибка при обучении")
+                        with st.expander("Подробности ошибки"):
+                            st.code(result.stderr)
+                except Exception as e:
+                    st.error(f"Ошибка запуска: {e}")
+
+        st.markdown("---")
+        
+        # Добавляем новый режим объединения файлов
         mode = st.radio(
             "Режим работы",
-            ["Проверка транзакции", "Пакетная проверка"],
-            help="Выберите режим: одна транзакция или загрузка CSV файла"
+            ["Проверка транзакции", "Пакетная проверка", "История проверок", "Объединить файлы"],
+            help="Выберите режим работы"
         )
+
     
-    # Основная область
+    # Инициализация истории в session_state
+    if 'history' not in st.session_state:
+        st.session_state.history = []
+
+    # Основная область - обработка выбранного режима
     if mode == "Проверка транзакции":
         show_single_transaction_mode(predictor)
-    else:
+    elif mode == "Пакетная проверка":
         show_batch_mode(predictor)
+    elif mode == "История проверок":
+        show_history_mode()
+    elif mode == "Объединить файлы":
+        show_merge_files_mode()
+
+
+
+def show_merge_files_mode():
+    """Режим объединения двух CSV файлов (транзакции + поведенческие паттерны)"""
+    st.header("Объединить файлы")
+    st.markdown("Загрузите два CSV‑файла: файл транзакций и файл с поведенческими паттернами.")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        trans_file = st.file_uploader("Файл транзакций", type=["csv"], key="trans_file")
+    with col2:
+        beh_file = st.file_uploader("Файл поведенческих паттернов", type=["csv"], key="beh_file")
+
+    if trans_file is not None and beh_file is not None:
+        # Функция загрузки с обработкой кодировок и разделителей
+        def load_csv_smart(uploaded):
+            # Пробуем разные кодировки и разделители
+            encodings = ['cp1251', 'utf-8', 'latin1']
+            separators = [';', ',']
+            
+            for enc in encodings:
+                for sep in separators:
+                    try:
+                        uploaded.seek(0)
+                        df = pd.read_csv(uploaded, encoding=enc, sep=sep)
+                        # Проверка: если только одна колонка, вероятно разделитель не тот
+                        if df.shape[1] > 1:
+                            return df
+                    except Exception:
+                        continue
+            return None
+
+        df_trans = load_csv_smart(trans_file)
+        df_beh = load_csv_smart(beh_file)
+
+        if df_trans is None or df_beh is None:
+            st.error("Не удалось прочитать файлы. Проверьте формат (CSV) и кодировку.")
+            return
+
+        # Словарь для переименования колонок (из data_loader.py)
+        trans_mapping = {
+            'Уникальный идентификатор клиента': 'client_id',
+            'Дата совершенной транзакции': 'transaction_date',
+            'Дата и время совершенной транзакции': 'transaction_datetime',
+            'Сумма совершенного перевода': 'amount',
+            'Уникальный идентификатор транзакции': 'transaction_id',
+            'Зашифрованный идентификатор получателя/destination транзакции': 'destination_id',
+            'Размеченные транзакции(переводы), где 1 - мошенническая операция , 0 - чистая': 'is_fraud'
+        }
+        
+        beh_mapping = {
+            'Уникальный идентификатор клиента': 'client_id',
+            'Дата совершенной транзакции': 'transaction_date',
+            'UniqueCustomerID': 'client_id',
+            'date': 'transaction_date'
+        }
+
+        # Переименование
+        df_trans.rename(columns=trans_mapping, inplace=True)
+        df_beh.rename(columns=beh_mapping, inplace=True)
+
+        # Проверка наличия client_id
+        if 'client_id' not in df_trans.columns:
+            st.error(f"В файле транзакций не найдена колонка 'client_id'. Найдены: {list(df_trans.columns)}")
+            return
+        if 'client_id' not in df_beh.columns:
+            st.error(f"В файле паттернов не найдена колонка 'client_id'. Найдены: {list(df_beh.columns)}")
+            return
+
+        st.success(f"✓ Загружено {len(df_trans)} транзакций и {len(df_beh)} записей поведенческих паттернов")
+
+        # Объединяем по client_id
+        merged = pd.merge(df_trans, df_beh, on='client_id', how='inner')
+        st.info(f"Получено {len(merged)} строк после объединения (inner join по `client_id`).")
+        st.dataframe(merged.head(1000))
+        if len(merged) > 1000:
+            st.warning(f"⚠️ Показаны первые 1000 строк из {len(merged)}. Скачайте CSV для просмотра всех данных.")
+
+        # Кнопка скачивания результата
+        csv = merged.to_csv(index=False, encoding='utf-8')
+        st.download_button(
+            label="💾 Скачать объединённый CSV",
+            data=csv,
+            file_name="merged_data.csv",
+            mime="text/csv",
+        )
+    else:
+        st.info("Загрузите оба файла, чтобы увидеть результат.")
 
 
 def show_single_transaction_mode(predictor):
     """Режим проверки одной транзакции"""
     
-    st.header("💳 Проверка транзакции")
+    st.header("Проверка транзакции")
     
     col1, col2, col3 = st.columns(3)
     
@@ -184,7 +333,7 @@ def show_single_transaction_mode(predictor):
     # Кнопка проверки
     st.markdown("---")
     
-    if st.button("🔍 Проверить транзакцию", type="primary", use_container_width=True):
+    if st.button("Проверить транзакцию", type="primary", use_container_width=True):
         
         # Формирование данных транзакции
         transaction_data = {
@@ -210,10 +359,18 @@ def show_single_transaction_mode(predictor):
         # Предсказание
         with st.spinner("Анализ транзакции..."):
             result = predictor.predict_single_transaction(transaction_data, explain=True)
+            
+            # Save to history
+            st.session_state.history.insert(0, {
+                'time': pd.Timestamp.now().strftime("%H:%M:%S"),
+                'amount': amount,
+                'prob': result['fraud_probability'],
+                'rec': result['recommendation']
+            })
         
         # Отображение результата
         st.markdown("---")
-        st.header("📊 Результат анализа")
+        st.header("Результат анализа")
         
         # Вероятность
         fraud_prob = result['fraud_probability']
@@ -244,7 +401,7 @@ def show_single_transaction_mode(predictor):
         ))
         
         fig.update_layout(height=300)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
         
         # Рекомендация
         col1, col2, col3 = st.columns(3)
@@ -262,21 +419,21 @@ def show_single_transaction_mode(predictor):
         if result['recommendation'] == "БЛОКИРОВАТЬ":
             st.markdown(f"""
             <div class="fraud-alert">
-                <h3>⛔ ВЫСОКИЙ РИСК МОШЕННИЧЕСТВА</h3>
+                <h3>ВЫСОКИЙ РИСК МОШЕННИЧЕСТВА</h3>
                 <p>Рекомендуется заблокировать транзакцию и провести дополнительную проверку.</p>
             </div>
             """, unsafe_allow_html=True)
         elif result['recommendation'] == "ПРОВЕРИТЬ":
             st.markdown(f"""
             <div class="warning-alert">
-                <h3>⚠️ СРЕДНИЙ РИСК</h3>
+                <h3>СРЕДНИЙ РИСК</h3>
                 <p>Рекомендуется дополнительная проверка перед выполнением транзакции.</p>
             </div>
             """, unsafe_allow_html=True)
         else:
             st.markdown(f"""
             <div class="clean-alert">
-                <h3>✅ НИЗКИЙ РИСК</h3>
+                <h3>НИЗКИЙ РИСК</h3>
                 <p>Транзакция выглядит легитимной.</p>
             </div>
             """, unsafe_allow_html=True)
@@ -284,7 +441,7 @@ def show_single_transaction_mode(predictor):
         # Топ факторов
         if 'top_factors' in result and result['top_factors']:
             st.markdown("---")
-            st.subheader("🔍 Ключевые факторы решения")
+            st.subheader("Ключевые факторы решения")
             
             factors_df = pd.DataFrame(result['top_factors'])
             
@@ -299,7 +456,7 @@ def show_single_transaction_mode(predictor):
                 labels={'contribution': 'Вклад в решение', 'feature': 'Признак'}
             )
             fig.update_layout(height=300)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
             
             # Таблица факторов
             st.dataframe(
@@ -316,7 +473,7 @@ def show_single_transaction_mode(predictor):
 def show_batch_mode(predictor):
     """Режим пакетной проверки"""
     
-    st.header("📁 Пакетная проверка транзакций")
+    st.header("Пакетная проверка транзакций")
     
     st.info("Загрузите CSV файл с транзакциями для массовой проверки")
     
@@ -328,30 +485,107 @@ def show_batch_mode(predictor):
     
     if uploaded_file is not None:
         try:
-            # Try cp1251 first (our data encoding), then utf-8, then latin1
-            try:
-                df = pd.read_csv(uploaded_file, encoding='cp1251', sep=';')
-            except (UnicodeDecodeError, pd.errors.ParserError):
-                uploaded_file.seek(0)  # Reset file pointer
-                try:
-                    df = pd.read_csv(uploaded_file, encoding='utf-8')
-                except (UnicodeDecodeError, pd.errors.ParserError):
-                    uploaded_file.seek(0)
-                    df = pd.read_csv(uploaded_file, encoding='latin1')
+            # Smart CSV loading with separator and encoding detection
+            def load_csv_smart(uploaded):
+                encodings = ['utf-8', 'cp1251', 'latin1', 'windows-1251']
+                separators = [',', ';', '\t', '|']
+                
+                for enc in encodings:
+                    for sep in separators:
+                        try:
+                            uploaded.seek(0)
+                            df = pd.read_csv(uploaded, encoding=enc, sep=sep, low_memory=False)
+                            # Check if we got more than one column (successful parsing)
+                            if df.shape[1] > 1:
+                                return df
+                        except Exception:
+                            continue
+                
+                # If all attempts failed, try with default settings
+                uploaded.seek(0)
+                return pd.read_csv(uploaded, low_memory=False)
+            
+            df = load_csv_smart(uploaded_file)
             
             st.success(f"✓ Загружено {len(df)} транзакций")
+
+            # Очистка от повторных заголовков (распространенная проблема при склейке файлов)
+            # Проверяем, есть ли строки, где значение в колонке совпадает с названием колонки
+            rows_before = len(df)
+            for col in df.columns:
+                # Проверяем только строковые колонки или object
+                if df[col].dtype == 'object':
+                    # Удаляем строки, где значение равно названию колонки (с учетом возможных пробелов)
+                    is_header = df[col].astype(str).str.strip() == col.strip()
+                    if is_header.any():
+                        df = df[~is_header]
+            
+            if len(df) < rows_before:
+                st.warning(f"⚠️ Удалено {rows_before - len(df)} строк, являющихся повторными заголовками.")
+            
+            # Check if this is raw behavioral data (not processed features)
+            # Look for Russian column names from behavioral patterns file
+            behavioral_indicators = [
+                'Количество разных версий ОС',
+                'Количество разных моделей телефона',
+                'Модель телефона из самой последней сессии',
+                'Версия ОС из самой последней сессии',
+                'Количество уникальных логин-сессий'
+            ]
+            is_behavioral_data = any(
+                any(indicator in str(col) for indicator in behavioral_indicators)
+                for col in df.columns
+            )
+            
+            # Check if this has required model features
+            required_features = ['amount', 'hour', 'day_of_week']
+            has_model_features = all(col in df.columns for col in required_features)
+            
+            if is_behavioral_data and not has_model_features:
+                st.error("""
+                ❌ **Обнаружены сырые поведенческие данные**
+                
+                Этот файл содержит поведенческие паттерны клиентов, но не содержит данных о транзакциях.
+                
+                **Что нужно сделать:**
+                1. Перейдите в режим "Объединить файлы"
+                2. Загрузите файл транзакций И файл поведенческих паттернов
+                3. Скачайте объединённый файл
+                4. Загрузите объединённый файл сюда для пакетной проверки
+                
+                Или используйте уже готовый файл `demo_batch_ready.csv` для тестирования.
+                """)
+                return
             
             # Предпросмотр
             with st.expander("Предпросмотр данных"):
                 st.dataframe(df.head(10))
             
+            # Настройки порога
+            threshold = st.slider(
+                "Порог классификации (Threshold)", 
+                min_value=0.0, 
+                max_value=1.0, 
+                value=0.5, 
+                step=0.01,
+                help="Транзакции с вероятностью выше этого порога будут считаться мошенническими."
+            )
+
             if st.button("Проверить все транзакции", type="primary"):
                 with st.spinner("Анализ транзакций..."):
-                    predictions = predictor.predict_batch(df)
+                    # Сохраняем в session_state
+                    st.session_state.batch_predictions = predictor.predict_batch(df)
+            
+            # Если есть результаты в session_state
+            if 'batch_predictions' in st.session_state:
+                predictions = st.session_state.batch_predictions.copy()
+                
+                # Пересчитываем is_fraud на основе выбранного порога
+                predictions['is_fraud'] = (predictions['fraud_probability'] >= threshold).astype(int)
                 
                 # Статистика
                 st.markdown("---")
-                st.subheader("📊 Результаты анализа")
+                st.subheader("Результаты анализа")
                 
                 col1, col2, col3, col4 = st.columns(4)
                 
@@ -380,7 +614,10 @@ def show_batch_mode(predictor):
                     title="Распределение вероятностей мошенничества",
                     labels={'fraud_probability': 'Вероятность мошенничества'}
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                # Добавляем линию порога
+                fig.add_vline(x=threshold, line_dash="dash", line_color="red", annotation_text=f"Threshold {threshold}")
+                
+                st.plotly_chart(fig, width="stretch")
                 
                 # Таблица с результатами
                 st.subheader("Детальные результаты")
@@ -402,13 +639,13 @@ def show_batch_mode(predictor):
                 
                 st.dataframe(
                     display_df[['fraud_probability', 'is_fraud', 'recommendation']],
-                    use_container_width=True
+                    width="stretch"
                 )
                 
                 # Скачивание результатов
                 csv = predictions.to_csv(index=False).encode('utf-8')
                 st.download_button(
-                    label="📥 Скачать результаты (CSV)",
+                    label="Скачать результаты (CSV)",
                     data=csv,
                     file_name="fraud_detection_results.csv",
                     mime="text/csv"
@@ -416,6 +653,31 @@ def show_batch_mode(predictor):
         
         except Exception as e:
             st.error(f"Ошибка при обработке файла: {e}")
+
+
+def show_history_mode():
+    """Режим просмотра истории"""
+    st.header("История проверок")
+    
+    if not st.session_state.history:
+        st.info("История пуста. Проверьте несколько транзакций.")
+        return
+    
+    history_df = pd.DataFrame(st.session_state.history)
+    
+    # Стилизация таблицы
+    def highlight_rec(val):
+        color = 'green' if val == 'OK' else 'orange' if val == 'ПРОВЕРИТЬ' else 'red'
+        return f'color: {color}; font-weight: bold'
+    
+    st.dataframe(
+        history_df.style.map(highlight_rec, subset=['rec']),
+        width="stretch"
+    )
+    
+    if st.button("Очистить историю"):
+        st.session_state.history = []
+        st.rerun()
 
 
 if __name__ == "__main__":

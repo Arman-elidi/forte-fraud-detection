@@ -115,11 +115,30 @@ class FraudPredictor:
                 transactions_df[col] = -9999  # sentinel value for missing
         
         X = transactions_df[self.model.feature_cols].copy()
+
+        # Remove rows that might be headers (where value equals column name)
+        # This fixes the "Cannot convert 'last_os_categorical' to float" error if header is in data
+        cols_to_check = [c for c in X.columns if X[c].dtype == 'object']
+        if cols_to_check:
+            for col in cols_to_check:
+                # If we find the column name as a value in that column, drop those rows
+                is_header_row = X[col].astype(str) == col
+                if is_header_row.any():
+                    X = X[~is_header_row]
+
         
-        # Fill NaN values
-        X = X.fillna(-9999)
+        # Convert categorical columns to string first (before fillna)
+        for col in X.select_dtypes(include=['category']).columns:
+            X[col] = X[col].astype(str)
         
-        # Convert object columns to string (for categorical features)
+        # Fill NaN values - numeric columns with -9999, object columns with 'missing'
+        for col in X.columns:
+            if X[col].dtype == 'object':
+                X[col] = X[col].fillna('missing').astype(str) # Ensure string type
+            else:
+                X[col] = X[col].fillna(-9999)
+        
+        # Convert remaining object columns to string (for categorical features)
         for col in X.select_dtypes(include=['object']).columns:
             X[col] = X[col].astype(str)
         
