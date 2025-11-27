@@ -1,9 +1,9 @@
 # ForteBank Fraud Detection Hackathon
 
-## 🎯 Goal
+##  Goal
 Develop an end‑to‑end ML anti‑fraud solution for mobile banking transactions, covering data preparation, feature engineering, model training, interpretation, and a demo MVP (Streamlit UI + FastAPI API).
 
-## 📂 Repository Structure
+##  Repository Structure
 ```
 forte/
 ├─ data/                 # raw & processed data
@@ -22,7 +22,7 @@ forte/
 └─ README.md             # Project overview
 ```
 
-## 🚀 How to Run
+##  How to Run
 
 ### 1. Setup
 ```bash
@@ -48,7 +48,7 @@ python api.py
 ```
 API docs: http://localhost:8000/docs
 
-## 📊 What is Delivered
+##  What is Delivered
 - **ML model** (CatBoost) with probability output and configurable threshold.
 - **Feature set** (30+ engineered features) covering transaction, temporal, amount, client behavior, and velocity.
 - **Interpretability** via SHAP (global & local) integrated into UI.
