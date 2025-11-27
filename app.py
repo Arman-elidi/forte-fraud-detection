@@ -12,6 +12,8 @@ from pathlib import Path
 import plotly.graph_objects as go
 import plotly.express as px
 import importlib
+import sqlite3
+from datetime import datetime
 
 # Force reload inference module to get latest code
 import inference
@@ -92,6 +94,36 @@ def load_predictor():
         st.error(f"Ошибка загрузки модели: {e}")
         return None
 
+
+def get_db_connection():
+    """Создание подключения к БД"""
+    conn = sqlite3.connect('/usr/src/forte/history.db')
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def save_to_history(filename, status, details):
+    """Сохранение записи в историю"""
+    try:
+        conn = get_db_connection()
+        conn.execute(
+            'INSERT INTO upload_history (filename, status, details) VALUES (?, ?, ?)',
+            (filename, status, details)
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        st.error(f"Ошибка сохранения в историю: {e}")
+
+def get_history():
+    """Получение истории загрузок"""
+    try:
+        conn = get_db_connection()
+        history = conn.execute('SELECT * FROM upload_history ORDER BY upload_time DESC').fetchall()
+        conn.close()
+        return history
+    except Exception as e:
+        st.error(f"Ошибка чтения истории: {e}")
+        return []
 
 def main():
     """Основная функция приложения"""
@@ -183,6 +215,30 @@ def main():
     elif mode == "Объединить файлы":
         show_merge_files_mode()
 
+def show_history_mode():
+    """Режим просмотра истории"""
+    st.header("История загрузок и проверок")
+    
+    history = get_history()
+    
+    if not history:
+        st.info("История пуста")
+        return
+        
+    # Convert to DataFrame for better display
+    data = []
+    for row in history:
+        data.append({
+            'ID': row['id'],
+            'Файл': row['filename'],
+            'Время': row['upload_time'],
+            'Статус': row['status'],
+            'Детали': row['details']
+        })
+    
+    df = pd.DataFrame(data)
+    st.dataframe(df, use_container_width=True)
+
 
 
 def show_merge_files_mode():
@@ -230,33 +286,176 @@ def show_merge_files_mode():
             'Сумма совершенного перевода': 'amount',
             'Уникальный идентификатор транзакции': 'transaction_id',
             'Зашифрованный идентификатор получателя/destination транзакции': 'destination_id',
-            'Размеченные транзакции(переводы), где 1 - мошенническая операция , 0 - чистая': 'is_fraud'
+            'Размеченные транзакции(переводы), где 1 - мошенническая операция , 0 - чистая': 'is_fraud',
+            # Альтернативные названия
+            'cst_dim_id': 'client_id',
+            'transdate': 'transaction_date',
+            'transdatetime': 'transaction_datetime',
+            'docno': 'transaction_id',
+            'direction': 'destination_id',
+            'target': 'is_fraud'
         }
         
+        # Для поведенческих данных переименовываем ТОЛЬКО идентификаторы
+        # Остальные колонки (поведенческие признаки) оставляем в оригинальном виде,
+        # так как модель ожидает русские названия
         beh_mapping = {
             'Уникальный идентификатор клиента': 'client_id',
-            'Дата совершенной транзакции': 'transaction_date',
             'UniqueCustomerID': 'client_id',
-            'date': 'transaction_date'
+            'cst_dim_id': 'client_id',
+            'Дата совершенной транзакции': 'transaction_date',
+            'date': 'transaction_date',
+            'transdate': 'transaction_date',
         }
 
-        # Переименование
-        df_trans.rename(columns=trans_mapping, inplace=True)
-        df_beh.rename(columns=beh_mapping, inplace=True)
-
-        # Проверка наличия client_id
-        if 'client_id' not in df_trans.columns:
-            st.error(f"В файле транзакций не найдена колонка 'client_id'. Найдены: {list(df_trans.columns)}")
+        # Проверка наличия ключевых полей ДО переименования
+        # Ищем cst_dim_id и transdate в обоих файлах
+        has_cst_dim_trans = 'cst_dim_id' in df_trans.columns
+        has_cst_dim_beh = 'cst_dim_id' in df_beh.columns
+        has_transdate_trans = 'transdate' in df_trans.columns
+        has_transdate_beh = 'transdate' in df_beh.columns
+        
+        if not has_cst_dim_trans:
+            st.error(f"В файле транзакций не найдена колонка 'cst_dim_id'. Найдены: {list(df_trans.columns)}")
             return
-        if 'client_id' not in df_beh.columns:
-            st.error(f"В файле паттернов не найдена колонка 'client_id'. Найдены: {list(df_beh.columns)}")
+        if not has_cst_dim_beh:
+            st.error(f"В файле паттернов не найдена колонка 'cst_dim_id'. Найдены: {list(df_beh.columns)}")
             return
 
         st.success(f"✓ Загружено {len(df_trans)} транзакций и {len(df_beh)} записей поведенческих паттернов")
 
-        # Объединяем по client_id
-        merged = pd.merge(df_trans, df_beh, on='client_id', how='inner')
-        st.info(f"Получено {len(merged)} строк после объединения (inner join по `client_id`).")
+        # Очистка данных ДО объединения
+        # Удаляем строки-заголовки внутри данных
+        df_trans = df_trans[df_trans['cst_dim_id'] != 'cst_dim_id'].copy()
+        df_beh = df_beh[df_beh['cst_dim_id'] != 'cst_dim_id'].copy()
+        df_beh = df_beh[df_beh['cst_dim_id'] != 'UniqueCustomerID'].copy()
+        
+        # Очистка cst_dim_id от кавычек
+        df_trans['cst_dim_id'] = df_trans['cst_dim_id'].astype(str).str.replace("'", "", regex=False)
+        df_beh['cst_dim_id'] = df_beh['cst_dim_id'].astype(str).str.replace("'", "", regex=False)
+        
+        # Преобразование дат для объединения (если есть)
+        if has_transdate_trans:
+            df_trans['transdate'] = df_trans['transdate'].astype(str).str.replace("'", "", regex=False)
+            df_trans['transdate'] = pd.to_datetime(df_trans['transdate'], errors='coerce')
+        
+        if has_transdate_beh:
+            df_beh['transdate'] = df_beh['transdate'].astype(str).str.replace("'", "", regex=False)
+            df_beh['transdate'] = pd.to_datetime(df_beh['transdate'], errors='coerce')
+        
+        # ОБЪЕДИНЕНИЕ ПО ОРИГИНАЛЬНЫМ ПОЛЯМ: cst_dim_id + transdate
+        if has_transdate_trans and has_transdate_beh:
+            # Join по cst_dim_id + transdate (LEFT JOIN - сохраняем все из первого файла)
+            merged = pd.merge(
+                df_trans, 
+                df_beh, 
+                left_on=['cst_dim_id', 'transdate'],
+                right_on=['cst_dim_id', 'transdate'],
+                how='left',
+                suffixes=('', '_beh')
+            )
+            st.info(f"✓ Объединение по: cst_dim_id + transdate (LEFT JOIN)")
+            
+            # Save to history
+            save_to_history(
+                f"Merge: {trans_file.name} + {beh_file.name}", 
+                "Success", 
+                f"Merged {len(merged)} records"
+            )
+        else:
+            # Fallback: join только по cst_dim_id (если нет даты)
+            merged = pd.merge(
+                df_trans, 
+                df_beh, 
+                on='cst_dim_id', 
+                how='left',
+                suffixes=('', '_beh')
+            )
+            st.warning("⚠️ Объединение только по cst_dim_id (transdate не найдена)")
+        
+        # ТЕПЕРЬ переименовываем колонки в объединенном датафрейме
+        merged.rename(columns=trans_mapping, inplace=True)
+        merged.rename(columns=beh_mapping, inplace=True)
+        
+        # Удаляем дубликаты колонок после merge
+        duplicate_cols = [col for col in merged.columns if col.endswith('_beh')]
+        if duplicate_cols:
+            merged = merged.drop(columns=duplicate_cols)
+        
+        # Удаляем дубликаты _x и _y (оставляем _x, удаляем _y)
+        cols_to_drop = []
+        for col in merged.columns:
+            if col.endswith('_y'):
+                base_col = col[:-2]  # Удаляем '_y'
+                x_col = base_col + '_x'
+                # Если есть _x версия, переименовываем её в базовое имя
+                if x_col in merged.columns:
+                    merged[base_col] = merged[x_col]
+                    cols_to_drop.extend([x_col, col])
+                else:
+                    # Если нет _x, просто переименовываем _y в базовое имя
+                    merged[base_col] = merged[col]
+                    cols_to_drop.append(col)
+        
+        if cols_to_drop:
+            merged = merged.drop(columns=list(set(cols_to_drop)))
+        
+        # ФИНАЛЬНОЕ ПЕРЕИМЕНОВАНИЕ: русские названия → английские короткие названия
+        # Это для удобства просмотра в UI, но модель работает с русскими названиями
+        final_rename_mapping = {
+            'Количество разных версий ОС (os_ver) за последние 30 дней до transdate — сколько разных ОС/версий использовал клиент': 'monthly_os_changes',
+            'Количество разных моделей телефона (phone_model) за последние 30 дней — насколько часто клиент "менял устройство" по логам': 'monthly_phone_model_changes',
+            'Модель телефона из самой последней сессии (по времени) перед transdate': 'last_phone_model_categorical',
+            'Версия ОС из самой последней сессии перед transdate': 'last_os_categorical',
+            'Количество уникальных логин-сессий (минутных тайм-слотов) за последние 7 дней до transdate': 'logins_last_7_days',
+            'Количество уникальных логин-сессий за последние 30 дней до transdate': 'logins_last_30_days',
+            'Среднее число логинов в день за последние 7 дней: logins_last_7_days / 7': 'login_frequency_7d',
+            'Среднее число логинов в день за последние 30 дней: logins_last_30_days / 30': 'login_frequency_30d',
+            'Относительное изменение частоты логинов за 7 дней к средней частоте за 30 дней:\n(freq7d?freq30d)/freq30d(freq_{7d} - freq_{30d}) / freq_{30d}(freq7d?freq30d)/freq30d — показывает, стал клиент заходить чаще или реже недавно': 'freq_change_7d_vs_mean',
+            'Доля логинов за 7 дней от логинов за 30 дней': 'logins_7d_over_30d_ratio',
+            'Средний интервал (в секундах) между соседними сессиями за последние 30 дней': 'avg_login_interval_30d',
+            'Стандартное отклонение интервалов между логинами за 30 дней (в секундах), измеряет разброс интервалов': 'std_login_interval_30d',
+            'Дисперсия интервалов между логинами за 30 дней (в секундах²), ещё одна мера разброса': 'var_login_interval_30d',
+            'Дисперсия интервалов между логинами за 30 дней (в секундах?), ещё одна мера разброса': 'var_login_interval_30d',
+            'Экспоненциально взвешенное среднее интервалов между логинами за 7 дней, где более свежие сессии имеют больший вес (коэффициент затухания 0.3)': 'ewm_login_interval_7d',
+            'Показатель "взрывности" логинов: (std−mean)/(std+mean)(std - mean)/(std + mean)(std−mean)/(std+mean) для интервалов': 'burstiness_login_interval',
+            'Показатель "взрывности" логинов: (std?mean)/(std+mean)(std - mean)/(std + mean)(std?mean)/(std+mean) для интервалов': 'burstiness_login_interval',
+            'Fano-factor интервалов: variance / mean': 'fano_factor_login_interval',
+            'Z-скор среднего интервала за последние 7 дней относительно среднего за 30 дней: насколько сильно недавние интервалы отличаются от типичных, в единицах стандартного отклонения': 'zscore_avg_login_interval_7d'
+        }
+        merged.rename(columns=final_rename_mapping, inplace=True)
+        
+        # Удаляем дубликаты колонок (оставляем первое вхождение)
+        merged = merged.loc[:, ~merged.columns.duplicated()]
+        
+        # Оставляем только нужные колонки
+        required_columns = [
+            'client_id', 'transaction_date', 'transaction_datetime', 'amount', 
+            'transaction_id', 'destination_id', 'is_fraud',
+            'monthly_os_changes', 'monthly_phone_model_changes', 
+            'last_phone_model_categorical', 'last_os_categorical',
+            'logins_last_7_days', 'logins_last_30_days', 
+            'login_frequency_7d', 'login_frequency_30d',
+            'freq_change_7d_vs_mean', 'logins_7d_over_30d_ratio',
+            'avg_login_interval_30d', 'std_login_interval_30d', 
+            'var_login_interval_30d', 'ewm_login_interval_7d',
+            'burstiness_login_interval', 'fano_factor_login_interval', 
+            'zscore_avg_login_interval_7d'
+        ]
+        
+        # Фильтруем только те колонки, которые есть в merged
+        available_columns = [col for col in required_columns if col in merged.columns]
+        merged = merged[available_columns]
+        
+        # Статистика
+
+        st.success(f"✓ Получено {len(merged)} транзакций после объединения")
+        
+        # Показываем статистику поведенческих данных
+        behavioral_cols = [col for col in df_beh.columns if col not in ['client_id', 'transaction_date', 'transaction_date_key']]
+        if behavioral_cols and behavioral_cols[0] in merged.columns:
+            has_behavioral = merged[behavioral_cols[0]].notna().sum()
+            st.info(f"✓ Транзакций с поведенческими данными: {has_behavioral} ({has_behavioral/len(merged)*100:.1f}%)")
         st.dataframe(merged.head(1000))
         if len(merged) > 1000:
             st.warning(f"⚠️ Показаны первые 1000 строк из {len(merged)}. Скачайте CSV для просмотра всех данных.")
@@ -566,15 +765,32 @@ def show_batch_mode(predictor):
                 "Порог классификации (Threshold)", 
                 min_value=0.0, 
                 max_value=1.0, 
-                value=0.5, 
+                value=0.2,  # Изменено с 0.5 на 0.2 для лучшего соответствия данным
                 step=0.01,
-                help="Транзакции с вероятностью выше этого порога будут считаться мошенническими."
+                help="Транзакции с вероятностью выше этого порога будут считаться мошенническими. Рекомендации также зависят от этого порога."
             )
+            
+            # Информация о рекомендациях
+            st.info(f"""
+            **Как работают рекомендации:**
+            - 🔴 **БЛОКИРОВАТЬ**: вероятность ≥ {threshold * 1.5:.2f} (в 1.5 раза выше порога)
+            - 🟡 **ПРОВЕРИТЬ**: вероятность ≥ {threshold * 0.8:.2f} (близко к порогу)
+            - 🟢 **OK**: вероятность < {threshold * 0.8:.2f}
+            
+            Измените порог выше, чтобы увидеть больше транзакций для проверки.
+            """)
 
             if st.button("Проверить все транзакции", type="primary"):
                 with st.spinner("Анализ транзакций..."):
                     # Сохраняем в session_state
                     st.session_state.batch_predictions = predictor.predict_batch(df)
+                    
+                    # Save to history
+                    save_to_history(
+                        uploaded_file.name, 
+                        "Success", 
+                        f"Processed {len(df)} transactions"
+                    )
             
             # Если есть результаты в session_state
             if 'batch_predictions' in st.session_state:
@@ -582,6 +798,23 @@ def show_batch_mode(predictor):
                 
                 # Пересчитываем is_fraud на основе выбранного порога
                 predictions['is_fraud'] = (predictions['fraud_probability'] >= threshold).astype(int)
+                
+                # Пересчитываем рекомендации на основе выбранного порога
+                def get_recommendation(prob, threshold):
+                    # Используем выбранный порог как базовый
+                    # Блокировать - если вероятность значительно выше порога
+                    # Проверить - если вероятность около порога
+                    # OK - если вероятность ниже порога
+                    if prob >= threshold * 1.5:  # В 1.5 раза выше порога
+                        return "БЛОКИРОВАТЬ"
+                    elif prob >= threshold * 0.8:  # Близко к порогу (80% от порога)
+                        return "ПРОВЕРИТЬ"
+                    else:
+                        return "OK"
+                
+                predictions['recommendation'] = predictions['fraud_probability'].apply(
+                    lambda x: get_recommendation(x, threshold)
+                )
                 
                 # Статистика
                 st.markdown("---")
@@ -637,10 +870,19 @@ def show_batch_mode(predictor):
                 else:
                     display_df = predictions
                 
+                
+                # Показываем все колонки, но выделяем важные в начале
+                # Переупорядочиваем колонки: сначала результаты предсказания, потом остальные
+                result_cols = ['fraud_probability', 'is_fraud', 'recommendation']
+                other_cols = [col for col in display_df.columns if col not in result_cols]
+                ordered_cols = result_cols + other_cols
+                
                 st.dataframe(
-                    display_df[['fraud_probability', 'is_fraud', 'recommendation']],
-                    width="stretch"
+                    display_df[ordered_cols],
+                    width="stretch",
+                    height=400
                 )
+
                 
                 # Скачивание результатов
                 csv = predictions.to_csv(index=False).encode('utf-8')

@@ -158,6 +158,91 @@ class FraudRuleEngine:
             }
         
         # ============================================
+        # R9: Дропперство (Закон РК №205-VIII, ст. 232-1)
+        # Множественные входящие переводы + быстрый вывод
+        # ============================================
+        incoming_transfers_24h = transaction.get('incoming_transfers_24h', 0)
+        outgoing_time_since_incoming = transaction.get('time_since_last_incoming', 999)
+        
+        if incoming_transfers_24h >= 3 and outgoing_time_since_incoming < 1:  # < 1 час после получения
+            points = 40  # Высокий приоритет - уголовная статья
+            risk_score += points
+            triggered_rules['R9_dropper_scheme'] = {
+                'points': points,
+                'reason': f'Признаки дропперства: {incoming_transfers_24h} входящих за 24ч + вывод через {outgoing_time_since_incoming*60:.0f} мин (ст. 232-1 УК РК)'
+            }
+        
+        # ============================================
+        # R10: Операция во время звонка (Требование НБ РК 2025)
+        # Блокировка переводов при активном телефонном соединении
+        # ============================================
+        is_phone_call_active = transaction.get('is_phone_call_active', False)
+        
+        if is_phone_call_active:
+            points = 35
+            risk_score += points
+            triggered_rules['R10_call_during_transfer'] = {
+                'points': points,
+                'reason': 'Операция во время активного звонка - признак социальной инженерии (Норматив АРРФР 2025)'
+            }
+        
+        # ============================================
+        # R11: SIM-swap атака
+        # Смена устройства + крупный перевод в течение 24ч
+        # ============================================
+        device_changed_recently = transaction.get('device_changed_24h', False)
+        is_large_amount = amount > client_amount_median * 2
+        
+        if device_changed_recently and is_large_amount:
+            points = 35
+            risk_score += points
+            triggered_rules['R11_sim_swap_attack'] = {
+                'points': points,
+                'reason': f'SIM-swap атака: смена устройства + крупный перевод {amount:.0f} (> 2x медианы)'
+            }
+        
+        # ============================================
+        # R12: Превышение лимита устройств (Правила НБ РК)
+        # Максимум 10 SIM-карт/устройств на клиента
+        # ============================================
+        unique_devices_30d = transaction.get('unique_devices_30d', 1)
+        
+        if unique_devices_30d > 10:
+            points = 25
+            risk_score += points
+            triggered_rules['R12_device_limit_exceeded'] = {
+                'points': points,
+                'reason': f'Превышен лимит устройств: {unique_devices_30d} (max 10 по Правилам МЦ РК от 18.11.2025)'
+            }
+        
+        # ============================================
+        # R13: Биометрия не пройдена для нового получателя
+        # Обязательная 2FA + биометрия (АРРФР 07.2025)
+        # ============================================
+        biometric_verified = transaction.get('biometric_verified', True)  # По умолчанию True если нет данных
+        
+        if is_new_destination and not biometric_verified:
+            points = 30
+            risk_score += points
+            triggered_rules['R13_no_biometric_new_dest'] = {
+                'points': points,
+                'reason': 'Новый получатель без биометрической верификации (Пост. АРРФР №54 от 25.08.2025)'
+            }
+        
+        # ============================================
+        # R14: Получатель в черном списке антифрод-центра НБ РК
+        # ============================================
+        dest_in_blacklist = transaction.get('destination_in_antifraud_db', False)
+        
+        if dest_in_blacklist:
+            points = 50  # Критический - автоблокировка
+            risk_score += points
+            triggered_rules['R14_blacklisted_destination'] = {
+                'points': points,
+                'reason': 'Получатель в базе мошеннических транзакций антифрод-центра НБ РК'
+            }
+        
+        # ============================================
         # Принятие решения
         # ============================================
         if risk_score >= self.BLOCK_THRESHOLD:
@@ -334,3 +419,101 @@ if __name__ == "__main__":
     print(f"Rule Score: {rule_score}")
     print(f"Final Decision: {final_decision}")
     print(f"Explanation: {explanation}")
+    
+    # Пример 4: Дропперство (Казахстанское законодательство)
+    print("\n" + "=" * 60)
+    print("ПРИМЕР 4: Дропперство (Закон РК №205-VIII, ст. 232-1)")
+    print("=" * 60)
+    
+    transaction4 = {
+        'amount': 250000,
+        'hour': 15,
+        'is_new_destination': 0,
+        'time_since_last_tx': 2,
+        'is_round_100': 1,
+        'incoming_transfers_24h': 5,  # Множественные входящие
+        'time_since_last_incoming': 0.5  # Вывод через 30 минут
+    }
+    
+    client_stats4 = {
+        'amount_mean': 15000,
+        'amount_median': 12000,
+        'night_ratio': 0.05,
+        'tx_count': 8
+    }
+    
+    score, decision, rules = rule_engine.evaluate_transaction(transaction4, client_stats4)
+    
+    print(f"Risk Score: {score}")
+    print(f"Decision: {decision}")
+    print(f"Triggered Rules: {len(rules)}")
+    for rule_name, rule_info in rules.items():
+        print(f"  - {rule_name}: +{rule_info['points']} ({rule_info['reason']})")
+    
+    # Пример 5: Операция во время звонка (Норматив АРРФР 2025)
+    print("\n" + "=" * 60)
+    print("ПРИМЕР 5: Социальная инженерия (Операция во время звонка)")
+    print("=" * 60)
+    
+    transaction5 = {
+        'amount': 80000,
+        'hour': 10,
+        'is_new_destination': 1,
+        'time_since_last_tx': 12,
+        'is_round_100': 0,
+        'is_phone_call_active': True,  # Активный звонок!
+        'biometric_verified': False  # Биометрия не пройдена
+    }
+    
+    client_stats5 = {
+        'amount_mean': 20000,
+        'amount_median': 18000,
+        'night_ratio': 0.08,
+        'tx_count': 45
+    }
+    
+    score, decision, rules = rule_engine.evaluate_transaction(transaction5, client_stats5)
+    
+    print(f"Risk Score: {score}")
+    print(f"Decision: {decision}")
+    print(f"Triggered Rules: {len(rules)}")
+    for rule_name, rule_info in rules.items():
+        print(f"  - {rule_name}: +{rule_info['points']} ({rule_info['reason']})")
+    
+    # Пример 6: SIM-swap атака
+    print("\n" + "=" * 60)
+    print("ПРИМЕР 6: SIM-swap атака")
+    print("=" * 60)
+    
+    transaction6 = {
+        'amount': 150000,
+        'hour': 3,
+        'is_new_destination': 1,
+        'time_since_last_tx': 0.05,
+        'is_round_100': 0,
+        'device_changed_24h': True,  # Смена устройства!
+        'unique_devices_30d': 12  # Превышение лимита
+    }
+    
+    client_stats6 = {
+        'amount_mean': 25000,
+        'amount_median': 22000,
+        'night_ratio': 0.03,
+        'tx_count': 30
+    }
+    
+    behavioral_stats6 = {
+        'is_outlier_flag': 1,
+        'zscore_avg_login_interval_7d': 4.2,
+        'login_frequency_spike': True
+    }
+    
+    score, decision, rules = rule_engine.evaluate_transaction(
+        transaction6, client_stats6, behavioral_stats6
+    )
+    
+    print(f"Risk Score: {score}")
+    print(f"Decision: {decision}")
+    print(f"Triggered Rules: {len(rules)}")
+    for rule_name, rule_info in rules.items():
+        print(f"  - {rule_name}: +{rule_info['points']} ({rule_info['reason']})")

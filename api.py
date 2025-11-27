@@ -26,6 +26,15 @@ class TransactionRequest(BaseModel):
     is_new_destination: bool = Field(False, description="Первый перевод этому получателю?")
     client_avg_amount: Optional[float] = Field(None, description="Средняя сумма переводов клиента")
     
+    # Казахстанские нормативы (Закон РК №205-VIII от 30.06.2025)
+    is_phone_call_active: Optional[bool] = Field(False, description="Активный звонок (НБ РК 2025)")
+    biometric_verified: Optional[bool] = Field(True, description="Биометрия пройдена (АРРФР 07.2025)")
+    device_changed_24h: Optional[bool] = Field(False, description="Смена устройства за 24ч (SIM-swap)")
+    incoming_transfers_24h: Optional[int] = Field(0, description="Входящих переводов за 24ч (дропперство)")
+    time_since_last_incoming: Optional[float] = Field(999, description="Часов с последнего входящего")
+    unique_devices_30d: Optional[int] = Field(1, description="Уникальных устройств за 30д (max 10)")
+    destination_in_antifraud_db: Optional[bool] = Field(False, description="Получатель в черном списке НБ РК")
+    
     # Опциональные поведенческие признаки
     behavioral_features: Optional[Dict[str, float]] = Field(None, description="Поведенческие признаки")
 
@@ -128,6 +137,15 @@ async def predict_transaction(transaction: TransactionRequest, explain: bool = T
         'is_evening': 1 if 18 <= transaction.hour <= 23 else 0,
         'log_amount': __import__('numpy').log1p(transaction.amount),
         'is_new_destination': 1 if transaction.is_new_destination else 0,
+        
+        # Казахстанские нормативы
+        'is_phone_call_active': transaction.is_phone_call_active,
+        'biometric_verified': transaction.biometric_verified,
+        'device_changed_24h': transaction.device_changed_24h,
+        'incoming_transfers_24h': transaction.incoming_transfers_24h,
+        'time_since_last_incoming': transaction.time_since_last_incoming,
+        'unique_devices_30d': transaction.unique_devices_30d,
+        'destination_in_antifraud_db': transaction.destination_in_antifraud_db,
     }
     
     # Добавляем опциональные признаки
