@@ -524,12 +524,11 @@ The risk management system successfully delivers core ICAAP functionality with 6
 4. Establish regular ICAAP reporting calendar
 
 **Budget Estimate (Phases 2-6):** 
-- Development: 18-24 weeks
-- Infrastructure: EUR 10-15k (servers, database, SSL certs)
+- Development: 4-8 weeks
 - Training: 2 weeks for risk team
 
 ---
 
-**Prepared by:** Risk Technology Team  
+**Prepared by:** Arman and AI 
 **Review Date:** December 19, 2025  
 **Next Review:** Q1 2026 (post-UAT)
